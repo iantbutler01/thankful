@@ -12,38 +12,47 @@
   const MAX_MESSAGE_LENGTH = 500;
 
   // Load messages from Supabase on mount
-  onMount(async () => {
-    try {
-      loading = true;
-      const { data, error: err } = await supabase
-        .from('gratitude_messages')
-        .select('*')
-        .order('timestamp', { ascending: false });
+  onMount(() => {
+    let subscription: any;
 
-      if (err) throw err;
-      messages = data || [];
+    const loadMessages = async () => {
+      try {
+        loading = true;
+        const { data, error: err } = await supabase
+          .from('gratitude_messages')
+          .select('*')
+          .order('timestamp', { ascending: false });
 
-      // Set up real-time subscription
-      const subscription = supabase
-        .channel('gratitude_messages')
-        .on('postgres_changes', 
-          { event: '*', schema: 'public', table: 'gratitude_messages' },
-          (payload) => {
-            if (payload.eventType === 'INSERT') {
-              messages = [payload.new as Database['public']['Tables']['gratitude_messages']['Row'], ...messages];
+        if (err) throw err;
+        messages = data || [];
+
+        // Set up real-time subscription
+        subscription = supabase
+          .channel('gratitude_messages')
+          .on('postgres_changes', 
+            { event: '*', schema: 'public', table: 'gratitude_messages' },
+            (payload) => {
+              if (payload.eventType === 'INSERT') {
+                messages = [payload.new as Database['public']['Tables']['gratitude_messages']['Row'], ...messages];
+              }
             }
-          }
-        )
-        .subscribe();
+          )
+          .subscribe();
 
-      return () => {
+      } catch (err) {
+        error = err instanceof Error ? err.message : 'Failed to load messages';
+      } finally {
+        loading = false;
+      }
+    };
+
+    loadMessages();
+
+    return () => {
+      if (subscription) {
         subscription.unsubscribe();
-      };
-    } catch (err) {
-      error = err instanceof Error ? err.message : 'Failed to load messages';
-    } finally {
-      loading = false;
-    }
+      }
+    };
   });
 
   // Handle form submission
