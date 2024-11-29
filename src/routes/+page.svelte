@@ -1,61 +1,94 @@
-<script>
+<script lang="ts">
   import { onMount } from 'svelte';
   import DOMPurify from 'dompurify';
+  import { supabase } from '$lib/supabase';
+  import type { Database } from '../types/supabase';
 
   let gratitudeMessage = '';
   let name = '';
-  let messages = [];
+  let messages: Database['public']['Tables']['gratitude_messages']['Row'][] = [];
+  let loading = false;
+  let error: string | null = null;
   const MAX_MESSAGE_LENGTH = 500;
 
-  // Load messages from local storage on mount
-  onMount(() => {
-    const storedMessages = localStorage.getItem('gratitudeMessages');
-    if (storedMessages) {
-      messages = JSON.parse(storedMessages);
+  // Load messages from Supabase on mount
+  onMount(async () => {
+    try {
+      loading = true;
+      const { data, error: err } = await supabase
+        .from('gratitude_messages')
+        .select('*')
+        .order('timestamp', { ascending: false });
+
+      if (err) throw err;
+      messages = data || [];
+
+      // Set up real-time subscription
+      const subscription = supabase
+        .channel('gratitude_messages')
+        .on('postgres_changes', 
+          { event: '*', schema: 'public', table: 'gratitude_messages' },
+          (payload) => {
+            if (payload.eventType === 'INSERT') {
+              messages = [payload.new as Database['public']['Tables']['gratitude_messages']['Row'], ...messages];
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        subscription.unsubscribe();
+      };
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to load messages';
+    } finally {
+      loading = false;
     }
   });
 
-  // Save messages to local storage
-  function saveMessages() {
-    localStorage.setItem('gratitudeMessages', JSON.stringify(messages));
-  }
-
   // Handle form submission
-  function handleSubmit() {
-    // Validate input
-    if (!gratitudeMessage.trim()) {
-      alert('Please enter a gratitude message');
-      return;
+  async function handleSubmit() {
+    try {
+      // Validate input
+      if (!gratitudeMessage.trim()) {
+        error = 'Please enter a gratitude message';
+        return;
+      }
+
+      if (gratitudeMessage.length > MAX_MESSAGE_LENGTH) {
+        error = `Message must be ${MAX_MESSAGE_LENGTH} characters or less`;
+        return;
+      }
+
+      loading = true;
+      error = null;
+
+      // Sanitize input
+      const sanitizedMessage = DOMPurify.sanitize(gratitudeMessage);
+      const sanitizedName = DOMPurify.sanitize(name);
+
+      // Create new message object
+      const newMessage = {
+        message: sanitizedMessage,
+        author: sanitizedName || 'Anonymous',
+        timestamp: new Date().toISOString()
+      };
+
+      // Insert into Supabase
+      const { error: err } = await supabase
+        .from('gratitude_messages')
+        .insert([newMessage]);
+
+      if (err) throw err;
+
+      // Reset form
+      gratitudeMessage = '';
+      name = '';
+    } catch (err) {
+      error = err instanceof Error ? err.message : 'Failed to save message';
+    } finally {
+      loading = false;
     }
-
-    if (gratitudeMessage.length > MAX_MESSAGE_LENGTH) {
-      alert(`Message must be ${MAX_MESSAGE_LENGTH} characters or less`);
-      return;
-    }
-
-    // Sanitize input
-    const sanitizedMessage = DOMPurify.sanitize(gratitudeMessage);
-    const sanitizedName = DOMPurify.sanitize(name);
-
-    // Create new message object
-    const newMessage = {
-      id: Date.now(),
-      message: sanitizedMessage,
-      name: sanitizedName || 'Anonymous',
-      timestamp: new Date().toISOString()
-    };
-
-    // Add message to array and sort by timestamp
-    messages = [...messages, newMessage].sort((a, b) => 
-      new Date(b.timestamp) - new Date(a.timestamp)
-    );
-
-    // Save to local storage
-    saveMessages();
-
-    // Reset form
-    gratitudeMessage = '';
-    name = '';
   }
 </script>
 
@@ -108,12 +141,22 @@
 
   <!-- Messages Display -->
   <div class="max-w-2xl mx-auto mt-8">
-    {#each messages as { message, name, timestamp }}
+    {#if loading}
+      <div class="text-center py-4">
+        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-autumn-brown mx-auto"></div>
+      </div>
+    {:else if error}
+      <div class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">
+        <strong class="font-bold">Error!</strong>
+        <span class="block sm:inline"> {error}</span>
+      </div>
+    {:else}
+      {#each messages as { message, author, timestamp }}
       <div class="gratitude-message">
         <div class="leaf-decoration top-2 right-2"></div>
         <p class="text-lg mb-2">{message}</p>
         <div class="text-sm text-autumn-brown opacity-75">
-          Shared by {name} on {new Date(timestamp).toLocaleDateString()}
+          Shared by {author} on {new Date(timestamp).toLocaleDateString()}
         </div>
       </div>
     {/each}

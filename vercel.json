@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "framework": "sveltekit",
+  "buildCommand": "npm run build",
+  "outputDirectory": ".svelte-kit/vercel",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "env": {
+    "VITE_SUPABASE_URL": "@vite_supabase_url",
+    "VITE_SUPABASE_ANON_KEY": "@vite_supabase_anon_key"
+  },
+  "git": {
+    "deploymentEnabled": {
+      "main": true,
+      "development": false,
+      "production": true
+    }
+  },
+  "github": {
+    "enabled": true,
+    "silent": true
+  }
+}
