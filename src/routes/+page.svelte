@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import DOMPurify from 'dompurify';
-  import { supabase } from '$lib/supabase';
+  import { supabase, messageChannel } from '$lib/supabase';
   import type { Database } from '../types/supabase';
+  import type { MessageEvent } from '$lib/supabase';
 
   let gratitudeMessage = '';
   let name = '';
@@ -13,11 +14,10 @@
 
   // Load messages from Supabase on mount
   onMount(() => {
-    let subscription: any;
-
     const loadMessages = async () => {
       try {
         loading = true;
+        error = null;
         const { data, error: err } = await supabase
           .from('gratitude_messages')
           .select('*')
@@ -25,37 +25,67 @@
 
         if (err) throw err;
         messages = data || [];
-
-        // Set up real-time subscription
-        subscription = supabase
-          .channel('gratitude_messages')
-          .on('postgres_changes', 
-            { event: '*', schema: 'public', table: 'gratitude_messages' },
-            (payload) => {
-              if (payload.eventType === 'INSERT') {
-                messages = [payload.new as Database['public']['Tables']['gratitude_messages']['Row'], ...messages];
-              }
-            }
-          )
-          .subscribe();
-
       } catch (err) {
         error = err instanceof Error ? err.message : 'Failed to load messages';
+        console.error('Error loading messages:', err);
       } finally {
         loading = false;
       }
     };
 
-    loadMessages();
-
-    return () => {
-      if (subscription) {
-        subscription.unsubscribe();
+    // Handle real-time message updates
+    const handleMessageUpdate = (event: MessageEvent) => {
+      try {
+        if (event.type === 'INSERT') {
+          messages = [event.message, ...messages];
+        } else if (event.type === 'UPDATE') {
+          messages = messages.map(msg => 
+            msg.id === event.message.id ? event.message : msg
+          );
+        } else if (event.type === 'DELETE') {
+          messages = messages.filter(msg => msg.id !== event.message.id);
+        }
+      } catch (err) {
+        console.error('Error handling message update:', err);
+        error = 'Failed to process message update';
       }
+    };
+
+    // Initialize data and subscriptions
+    loadMessages();
+    
+    // Subscribe to real-time updates
+    messageChannel.on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'gratitude_messages' },
+      (payload) => {
+        try {
+          if (payload.eventType === 'INSERT') {
+            const newMessage = payload.new as Database['public']['Tables']['gratitude_messages']['Row'];
+            messages = [newMessage, ...messages];
+          } else if (payload.eventType === 'UPDATE') {
+            const updatedMessage = payload.new as Database['public']['Tables']['gratitude_messages']['Row'];
+            messages = messages.map(msg => 
+              msg.id === updatedMessage.id ? updatedMessage : msg
+            );
+          } else if (payload.eventType === 'DELETE') {
+            const deletedMessage = payload.old as Database['public']['Tables']['gratitude_messages']['Row'];
+            messages = messages.filter(msg => msg.id !== deletedMessage.id);
+          }
+        } catch (err) {
+          console.error('Error handling message update:', err);
+          error = 'Failed to process message update';
+        }
+      }
+    );
+
+    // Cleanup function
+    return () => {
+      messageChannel.unsubscribe();
     };
   });
 
-  // Handle form submission
+  // Handle form submission with optimistic updates
   async function handleSubmit() {
     try {
       // Validate input
@@ -76,25 +106,36 @@
       const sanitizedMessage = DOMPurify.sanitize(gratitudeMessage);
       const sanitizedName = DOMPurify.sanitize(name);
 
+      const timestamp = new Date().toISOString();
+
       // Create new message object
       const newMessage = {
         message: sanitizedMessage,
         author: sanitizedName || 'Anonymous',
-        timestamp: new Date().toISOString()
+        timestamp,
+        created_at: timestamp
       };
 
+      // Reset form early for better UX
+      gratitudeMessage = '';
+      name = '';
+
       // Insert into Supabase
-      const { error: err } = await supabase
+      const { data, error: err } = await supabase
         .from('gratitude_messages')
-        .insert([newMessage]);
+        .insert([newMessage])
+        .select()
+        .single();
 
       if (err) throw err;
 
-      // Reset form
-      gratitudeMessage = '';
-      name = '';
+      // Add the confirmed message to the list if it's not already there
+      if (data && !messages.some(msg => msg.id === data.id)) {
+        messages = [data, ...messages];
+      }
     } catch (err) {
       error = err instanceof Error ? err.message : 'Failed to save message';
+      console.error('Error saving message:', err);
     } finally {
       loading = false;
     }
